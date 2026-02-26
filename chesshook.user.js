@@ -8,8 +8,8 @@
 // @version     2.4
 // @author      0mlml x btxcode
 // @description Chess.com Cheat Userscript
-// @updateURL   https://raw.githubusercontent.com/0mlml/chesshook/master/chesshook.user.js
-// @downloadURL https://raw.githubusercontent.com/0mlml/chesshook/master/chesshook.user.js
+// @updateURL   https://raw.githubusercontent.com/btxcode/chesshook/master/chesshook.user.js
+// @downloadURL https://raw.githubusercontent.com/btxcode/chesshook/master/chesshook.user.js
 // @run-at      document-start
 // ==/UserScript==
 
@@ -1573,3 +1573,4 @@
     }
   });
 })();
+
