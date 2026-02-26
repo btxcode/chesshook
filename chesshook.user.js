@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name        Chesshook
-// @include    	http://localhost*
+// @include    	https://www.chess.com/*
 // @grant       none
-// @require     https://raw.githubusercontent.com/0mlml/chesshook/master/betafish.js
+// @require     https://raw.githubusercontent.com/btxcode/chesshook/main/betafish.js
+// @require     https://raw.githubusercontent.com/btxcode/chesshook/main/stockfish-11-asm.js
 // @require     https://raw.githubusercontent.com/0mlml/vasara/main/vasara.js
-// @version     2.3
-// @author      0mlml
-// @description For Testing localhost chess analyzer
+// @version     2.4
+// @author      0mlml x btxcode
+// @description Chess.com Cheat Userscript
 // @updateURL   https://raw.githubusercontent.com/0mlml/chesshook/master/chesshook.user.js
 // @downloadURL https://raw.githubusercontent.com/0mlml/chesshook/master/chesshook.user.js
 // @run-at      document-start
@@ -58,7 +59,7 @@
       text: 'Force Draw',
       callback: e => {
         e.preventDefault();
-        if (document.location.hostname !== 'localhost') return alert('You must be on localhost to use this feature.');
+        if (document.location.hostname !== 'www.chess.com') return alert('You must be on chess.com to use this feature.');
         if (!document.location.pathname.startsWith('/play/computer')) return alert('You must be on the computer play page to use this feature.');
         const board = document.querySelector('wc-chess-board');
         if (!board?.game?.move) return alert('You must be in a game to use this feature.');
@@ -400,88 +401,59 @@
     }
   };
 
-  // Stockfish JS Engine (pure JS, no WASM needed)
-  let stockfishWorker = null;
+  // Stockfish Engine (loaded via @require, same pattern as betafish)
+  const stockfishWebWorkerFunc = () => {
+    const engine = STOCKFISH();
+    engine.onmessage = (line) => {
+      self.postMessage(line);
+    };
+    self.addEventListener('message', (e) => {
+      engine.postMessage(e.data);
+    });
+  };
+
+  const stockfishWorkerBlob = new Blob([`var STOCKFISH=${STOCKFISH.toString()};(${stockfishWebWorkerFunc.toString()})();`], { type: 'application/javascript' });
+  const stockfishWorkerURL = URL.createObjectURL(stockfishWorkerBlob);
+  const stockfishWorker = new Worker(stockfishWorkerURL);
+
   let stockfishReady = false;
   let stockfishEngineName = 'Stockfish';
 
-  const setupStockfishWorker = (worker) => {
-    stockfishWorker = worker;
+  stockfishWorker.onmessage = e => {
+    const line = typeof e.data === 'string' ? e.data : '';
+    if (!line) return;
 
-    stockfishWorker.onmessage = (e) => {
-      const line = typeof e.data === 'string' ? e.data : (e.data?.data || '');
-      if (!line) return;
+    const engineOutputTextArea = document.getElementById(namespace + '_engineoutput');
 
-      const engineOutputTextArea = document.getElementById(namespace + '_engineoutput');
+    if (line === 'uciok') {
+      stockfishWorker.postMessage('isready');
+    } else if (line === 'readyok') {
+      stockfishReady = true;
+      addToConsole(stockfishEngineName + ' engine ready');
+    } else if (line.startsWith('bestmove')) {
+      const bestMove = line.split(' ')[1];
+      addToConsole(`${stockfishEngineName} best move: ${bestMove}`);
+      handleEngineMove(bestMove);
+    } else if (line.startsWith('info') && engineOutputTextArea) {
+      const parts = line.split(' ');
+      const depthIdx = parts.indexOf('depth');
+      const scoreIdx = parts.indexOf('score');
+      const timeIdx = parts.indexOf('time');
+      const pvIdx = parts.indexOf('pv');
 
-      if (line === 'uciok') {
-        const hash = vs.queryConfigKey(namespace + '_stockfishhash') || 32;
-        stockfishWorker.postMessage('setoption name Hash value ' + hash);
-        stockfishWorker.postMessage('isready');
-      } else if (line === 'readyok') {
-        stockfishReady = true;
-        addToConsole(stockfishEngineName + ' engine ready');
-      } else if (line.startsWith('bestmove')) {
-        const bestMove = line.split(' ')[1];
-        addToConsole(stockfishEngineName + ' best move: ' + bestMove);
-        handleEngineMove(bestMove);
-      } else if (line.startsWith('info') && engineOutputTextArea) {
-        const parts = line.split(' ');
-        const depthIdx = parts.indexOf('depth');
-        const scoreIdx = parts.indexOf('score');
-        const timeIdx = parts.indexOf('time');
-        const pvIdx = parts.indexOf('pv');
-
-        const lines = engineOutputTextArea.value.split('\n');
-        if (depthIdx !== -1 && parts[depthIdx + 1]) lines[0] = 'depth ' + parts[depthIdx + 1];
-        if (scoreIdx !== -1 && parts[scoreIdx + 1]) lines[1] = 'score ' + parts[scoreIdx + 1] + ' ' + (parts[scoreIdx + 2] || '');
-        if (timeIdx !== -1 && parts[timeIdx + 1]) lines[2] = 'time ' + parts[timeIdx + 1];
-        if (pvIdx !== -1) lines[3] = 'best line ' + parts.slice(pvIdx + 1).join(' ');
-        engineOutputTextArea.value = lines.join('\n');
-      } else if (line.startsWith('id name')) {
-        stockfishEngineName = line.substring(8);
-        addToConsole('Engine: ' + stockfishEngineName);
-      }
-    };
-
-    stockfishWorker.onerror = (e) => {
-      addToConsole('Stockfish error: ' + (e.message || 'unknown'));
-      console.error('Stockfish error:', e);
-    };
-
-    stockfishWorker.postMessage('uci');
-  };
-
-  const initStockfish = async (url) => {
-    if (stockfishWorker) {
-      stockfishWorker.terminate();
-      stockfishWorker = null;
-      stockfishReady = false;
-    }
-
-    addToConsole('Loading Stockfish from: ' + url);
-
-    // Try fetch + blob worker (works for cross-origin URLs)
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      const source = await response.text();
-      const blob = new Blob([source], { type: 'application/javascript' });
-      const blobURL = URL.createObjectURL(blob);
-      setupStockfishWorker(new Worker(blobURL));
-      return;
-    } catch (e) {
-      console.warn('Fetch blob worker failed, trying direct Worker...', e);
-    }
-
-    // Fallback: direct Worker (works for same-origin/local paths)
-    try {
-      setupStockfishWorker(new Worker(url));
-    } catch (e) {
-      addToConsole('Failed to load Stockfish from: ' + url);
-      console.error(e);
+      const lines = engineOutputTextArea.value.split('\n');
+      if (depthIdx !== -1 && parts[depthIdx + 1]) lines[0] = 'depth ' + parts[depthIdx + 1];
+      if (scoreIdx !== -1 && parts[scoreIdx + 1]) lines[1] = 'score ' + parts[scoreIdx + 1] + ' ' + (parts[scoreIdx + 2] || '');
+      if (timeIdx !== -1 && parts[timeIdx + 1]) lines[2] = 'time ' + parts[timeIdx + 1];
+      if (pvIdx !== -1) lines[3] = 'best line ' + parts.slice(pvIdx + 1).join(' ');
+      engineOutputTextArea.value = lines.join('\n');
+    } else if (line.startsWith('id name')) {
+      stockfishEngineName = line.substring(8);
+      addToConsole('Engine: ' + stockfishEngineName);
     }
   };
+
+  stockfishWorker.postMessage('uci');
 
   const originalFetch = window.fetch;
   window.fetch = async (...args) => {
@@ -783,13 +755,6 @@
             alert('Please note that the external engine is not for the faint of heart. It requires tinkering and the user to host the chesshook intermediary server.')
             vs.setConfigValue(namespace + '_haswarnedaboutexternalengine', true);
           }
-        } else if (engine === 'stockfish') {
-          const sfPath = vs.queryConfigKey(namespace + '_stockfishpath');
-          if (!sfPath) {
-            addToConsole('Please set the path to Stockfish JS in the config.');
-            return;
-          }
-          initStockfish(sfPath);
         }
       }
     });
@@ -814,7 +779,7 @@
       type: 'text',
       display: 'External Engine URL: ',
       description: 'The URL of the external engine',
-      value: 'ws://localhost:8080/ws',
+      value: 'ws://www.chess.com:8080/ws',
       showOnlyIf: () => !vs.queryConfigKey(namespace + '_legitmode') && vs.queryConfigKey(namespace + '_whichengine') === 'external',
       callback: v => externalEngineWorker.postMessage({ type: 'INIT', payload: v })
     });
@@ -845,16 +810,6 @@
       value: 'passkey',
       showOnlyIf: () => !vs.queryConfigKey(namespace + '_legitmode') && vs.queryConfigKey(namespace + '_whichengine') === 'external',
       callback: v => externalEngineWorker.postMessage({ type: 'AUTH', payload: v })
-    });
-
-    vs.registerConfigValue({
-      key: namespace + '_stockfishpath',
-      type: 'text',
-      display: 'Stockfish JS URL: ',
-      description: 'URL or path to stockfish.js (supports local path or remote URL)',
-      value: '/stockfish-11-asm.js',
-      showOnlyIf: () => !vs.queryConfigKey(namespace + '_legitmode') && vs.queryConfigKey(namespace + '_whichengine') === 'stockfish',
-      callback: v => initStockfish(v)
     });
 
     vs.registerConfigValue({
@@ -1000,8 +955,9 @@
     if (vs.queryConfigKey(namespace + '_externalengineurl') && vs.queryConfigKey(namespace + '_whichengine') === 'external') {
       externalEngineWorker.postMessage({ type: 'INIT', payload: vs.queryConfigKey(namespace + '_externalengineurl') });
     }
-    if (vs.queryConfigKey(namespace + '_stockfishpath') && vs.queryConfigKey(namespace + '_whichengine') === 'stockfish') {
-      initStockfish(vs.queryConfigKey(namespace + '_stockfishpath'));
+    if (vs.queryConfigKey(namespace + '_whichengine') === 'stockfish') {
+      const hash = vs.queryConfigKey(namespace + '_stockfishhash') || 32;
+      stockfishWorker.postMessage('setoption name Hash value ' + hash);
     }
   }
 
@@ -1253,8 +1209,8 @@
       addToConsole(`CCCP computed move: ${move}`);
       handleEngineMove(move);
     } else if (vs.queryConfigKey(namespace + '_whichengine') === 'stockfish') {
-      if (!stockfishWorker || !stockfishReady) {
-        addToConsole('Stockfish is not ready. Check the path in config.');
+      if (!stockfishReady) {
+        addToConsole('Stockfish is still loading...');
         return;
       }
       stockfishWorker.postMessage('stop');
